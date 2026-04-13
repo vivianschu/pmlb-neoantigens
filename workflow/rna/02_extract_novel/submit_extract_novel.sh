@@ -34,7 +34,7 @@ merge_results() {
 
     # Generate summary and copy per-sample files
     {
-        echo "sample,total_novel,class_u,class_n,class_j,sequences_extracted,orfs_predicted"
+        echo "sample,total_novel,class_u,class_n,class_j,sequences_extracted"
 
         for sample in "${SAMPLES[@]}"; do
             sample_dir="${OUTPUT_DIR}/${sample}"
@@ -43,7 +43,6 @@ merge_results() {
 
             novel_gtf="${sample_dir}/${sample}_novel_transcripts.gtf"
             novel_fasta="${sample_dir}/${sample}_novel_sequences.fasta"
-            td_pep="${novel_fasta}.transdecoder.pep"
 
             if [[ -f "${novel_gtf}" ]]; then
                 class_u=$(grep -c 'class_code "u"' "${novel_gtf}" 2>/dev/null) || class_u=0
@@ -54,15 +53,14 @@ merge_results() {
                 seqs=0
                 [[ -f "${novel_fasta}" ]] && { seqs=$(grep -c "^>" "${novel_fasta}" 2>/dev/null) || seqs=0; }
 
-                orfs=0
-                [[ -f "${td_pep}" ]] && { orfs=$(grep -c "^>" "${td_pep}" 2>/dev/null) || orfs=0; }
-
                 # Copy per-sample transcript files to novel_transcripts/
                 cp "${novel_gtf}" "${NOVEL_TRANSCRIPTS_DIR}/${sample}_novel_transcripts.gtf"
                 [[ -f "${novel_fasta}" ]] && cp "${novel_fasta}" "${NOVEL_TRANSCRIPTS_DIR}/${sample}_novel_sequences.fasta"
-                [[ -f "${td_pep}" ]] && cp "${td_pep}" "${NOVEL_TRANSCRIPTS_DIR}/${sample}_novel_sequences.fasta.transdecoder.pep"
 
-                echo "${sample},${total},${class_u},${class_n},${class_j},${seqs},${orfs}"
+                echo "[COMPLETED]  ${sample}: total=${total} u=${class_u} n=${class_n} j=${class_j} seqs=${seqs}" >&2
+                echo "${sample},${total},${class_u},${class_n},${class_j},${seqs}"
+            else
+                echo "[SKIP] ${sample}: no novel_transcripts.gtf found at ${novel_gtf}" >&2
             fi
         done
     } > "${SUMMARY_FILE}"
@@ -71,16 +69,13 @@ merge_results() {
     local TOTAL_SAMPLES=$(tail -n +2 "${SUMMARY_FILE}" | wc -l)
     local TOTAL_TRANSCRIPTS=$(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '{sum+=$2} END {print sum}')
     local TOTAL_SEQS=$(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '{sum+=$6} END {print sum}')
-    local TOTAL_ORFS=$(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '{sum+=$7} END {print sum}')
-    local TD_SAMPLES=$(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '$7>0' | wc -l)
 
     echo "======================================"
     echo "Novel Transcript Summary (PMLB)"
     echo "======================================"
-    echo "Samples processed:    ${TOTAL_SAMPLES}"
-    echo "Total transcripts:    ${TOTAL_TRANSCRIPTS}"
-    echo "Total sequences:      ${TOTAL_SEQS}"
-    echo "Total ORFs predicted: ${TOTAL_ORFS} (${TD_SAMPLES} samples with TransDecoder output)"
+    echo "Samples processed:  ${TOTAL_SAMPLES}"
+    echo "Total transcripts:  ${TOTAL_TRANSCRIPTS}"
+    echo "Total sequences:    ${TOTAL_SEQS}"
     echo ""
     echo "Class code breakdown (across all samples):"
     echo "  u (intergenic):     $(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '{sum+=$3} END {print sum}')"
@@ -88,8 +83,9 @@ merge_results() {
     echo "  j (novel junction): $(tail -n +2 "${SUMMARY_FILE}" | awk -F',' '{sum+=$5} END {print sum}')"
     echo ""
     echo "Output files:"
-    echo "  Summary:              ${SUMMARY_FILE}"
-    echo "  Novel transcripts:    ${NOVEL_TRANSCRIPTS_DIR}/ (${TOTAL_SAMPLES} samples)"
+    echo "  Summary:           ${SUMMARY_FILE}"
+    echo "  Novel transcripts: ${NOVEL_TRANSCRIPTS_DIR}/ (${TOTAL_SAMPLES} samples)"
+    echo "  Next step:         run workflow/novel/run_transdecoder.sh locally"
     echo "======================================"
 }
 
@@ -98,7 +94,14 @@ merge_results() {
 #########################
 
 if [[ "${1:-}" == "--merge-only" ]]; then
-    merge_results
+    MERGE_LOG="${LOG_DIR}/merge_$(date +%Y%m%d_%H%M%S).log"
+    echo "======================================"
+    echo "merge-only started: $(date)"
+    echo "Log: ${MERGE_LOG}"
+    echo "======================================"
+    merge_results 2>&1 | tee "${MERGE_LOG}"
+    echo ""
+    echo "merge-only completed: $(date)"
     exit 0
 fi
 

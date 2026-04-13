@@ -136,35 +136,12 @@ SEQ_COUNT=$(grep -c "^>" "${NOVEL_FASTA}" 2>/dev/null) || SEQ_COUNT=0
 
 echo "Extracted ${SEQ_COUNT} sequences to ${NOVEL_FASTA}"
 
-#########################
-# TransDecoder ORF prediction
-#########################
-
-TD_PEP="${NOVEL_FASTA}.transdecoder.pep"
-ORF_COUNT=0
-
-if [[ ${SEQ_COUNT} -gt 0 ]]; then
-    echo ""
-    echo "Running TransDecoder ORF prediction..."
-
-    cd "${SAMPLE_OUTPUT}"
-
-    TransDecoder.LongOrfs \
-        -t "${NOVEL_FASTA}" \
-        -m 50
-
-    TransDecoder.Predict \
-        -t "${NOVEL_FASTA}" \
-        --single_best_only
-
-    if [[ -f "${TD_PEP}" ]]; then
-        ORF_COUNT=$(grep -c "^>" "${TD_PEP}" 2>/dev/null) || ORF_COUNT=0
-        echo "TransDecoder predicted ${ORF_COUNT} ORFs → ${TD_PEP}"
-    else
-        echo "WARNING: TransDecoder produced no .pep output for ${SAMPLE}"
-    fi
-else
-    echo "Skipping TransDecoder (no sequences)"
+if [[ ${SEQ_COUNT} -eq 0 && ${TOTAL_COUNT} -gt 0 ]]; then
+    echo "ERROR: gffread extracted 0 sequences from ${TOTAL_COUNT} transcripts." >&2
+    echo "  Check chromosome name compatibility between:" >&2
+    echo "    GTF:   $(cut -f1 "${FILTERED_GTF}" | sort -u | tr '\n' ' ')" >&2
+    echo "    FASTA: $(grep '^>' "${REF_FASTA}" | head -3 | sed 's/^>//' | cut -d' ' -f1 | tr '\n' ' ')" >&2
+    exit 1
 fi
 
 #########################
@@ -175,6 +152,6 @@ echo "======================================"
 echo "Job completed: $(date)"
 echo "Output files:"
 ls -lh "${FILTERED_GTF}" "${NOVEL_FASTA}"
-[[ -f "${TD_PEP}" ]] && ls -lh "${TD_PEP}"
-echo "Sequences: ${SEQ_COUNT}  |  ORFs predicted: ${ORF_COUNT}"
+echo "Sequences: ${SEQ_COUNT}"
 echo "======================================"
+echo "NOTE: Run workflow/novel/run_transdecoder.sh locally after transferring novel_transcripts/"

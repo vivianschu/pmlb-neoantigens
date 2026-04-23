@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submit HLA typing array jobs and optionally merge results
-# Usage: ./submit_hla_neosclc.sh [--dry-run] [--merge-only]
+# Usage: ./submit_hla.sh [--dry-run] [--merge-only]
 
 set -euo pipefail
 

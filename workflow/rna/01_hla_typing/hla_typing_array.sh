@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -t 04:00:00
+#SBATCH -t 06:00:00
 #SBATCH --mem=15G
 #SBATCH --account=hansengroup
 #SBATCH -J hla_pmlb
@@ -83,6 +83,10 @@ mkdir -p "${SAMPLE_OUTPUT}"
 # Step 1: Extract HLA reads
 #########################
 
+HLA_CLASS_I="A,B,C,E,F,G"
+HLA_CLASS_II="DRA,DPA1,DPB1,DQA1,DQB1,DRB1,DRB3,DRB4,DRB5,DMA,DMB,DOA,DOB"
+HLA_GENES="${HLA_CLASS_I},${HLA_CLASS_II}"
+
 echo "Extracting HLA reads..."
 arcasHLA extract "${INPUT_BAM}" -o "${SAMPLE_OUTPUT}" -t "${THREADS}" -v
 
@@ -101,6 +105,7 @@ if [[ -n "${EXTRACTED_1}" && -n "${EXTRACTED_2}" ]]; then
     echo "Running paired-end genotyping..."
     arcasHLA genotype "${EXTRACTED_1}" "${EXTRACTED_2}" \
         --threads "${THREADS}" \
+        --genes "${HLA_GENES}" \
         -o "${SAMPLE_OUTPUT}" \
         -v
 else
@@ -110,6 +115,7 @@ else
         echo "Running single-end genotyping..."
         arcasHLA genotype "${EXTRACTED_SINGLE}" \
             --threads "${THREADS}" \
+            --genes "${HLA_GENES}" \
             -o "${SAMPLE_OUTPUT}" \
             -v
     else

@@ -32,14 +32,27 @@ merge_results() {
     local FAILED_FILE="${OUTPUT_DIR}/failed_samples.txt"
     local MERGED_FILE="${OUTPUT_DIR}/all_genotypes.tsv"
 
+    local -a HLA_CLASS_I=(A B C E F G)
+    local -a HLA_CLASS_II=(DRA DPA1 DPB1 DQA1 DQB1 DRB1 DRB3 DRB4 DRB5 DMA DMB DOA DOB)
+    local -a ALL_GENES=("${HLA_CLASS_I[@]}" "${HLA_CLASS_II[@]}")
+
     # Arrays to track status
     local -a SUCCESSFUL_SAMPLES=()
     local -a FAILED_SAMPLES=()
     local -a FAILED_REASONS=()
 
+    # Build CSV header and NA placeholder from gene list
+    local HEADER="sample,status,reason"
+    local NA_COLS=""
+    for gene in "${ALL_GENES[@]}"; do
+        gene_lower=$(echo "${gene}" | tr '[:upper:]' '[:lower:]')
+        HEADER="${HEADER},${gene_lower}_1,${gene_lower}_2"
+        NA_COLS="${NA_COLS},NA,NA"
+    done
+
     # Generate summary CSV and collect status
     {
-        echo "sample,status,reason,hla_a1,hla_a2,hla_b1,hla_b2,hla_c1,hla_c2"
+        echo "${HEADER}"
 
         for sample in "${SAMPLES[@]}"; do
             sample_output="${OUTPUT_DIR}/${sample}"
@@ -47,11 +60,14 @@ merge_results() {
             input_bam="${SAMPLES_DIR}/${sample}/${sample}_Aligned.sortedByCoord.out.bam"
 
             if [[ -f "${genotype_json}" ]]; then
-                # Parse HLA alleles
-                hla_a=$(jq -r '(.A // ["NA","NA"]) | join(",")' "${genotype_json}" 2>/dev/null || echo "NA,NA")
-                hla_b=$(jq -r '(.B // ["NA","NA"]) | join(",")' "${genotype_json}" 2>/dev/null || echo "NA,NA")
-                hla_c=$(jq -r '(.C // ["NA","NA"]) | join(",")' "${genotype_json}" 2>/dev/null || echo "NA,NA")
-                echo "${sample},success,completed,${hla_a},${hla_b},${hla_c}"
+                allele_vals=""
+                for gene in "${ALL_GENES[@]}"; do
+                    vals=$(jq -r --arg g "${gene}" \
+                        '[(.[$g] // [])[0] // "NA", (.[$g] // [])[1] // "NA"] | join(",")' \
+                        "${genotype_json}" 2>/dev/null || echo "NA,NA")
+                    allele_vals="${allele_vals},${vals}"
+                done
+                echo "${sample},success,completed${allele_vals}"
                 SUCCESSFUL_SAMPLES+=("${sample}")
             else
                 # Diagnose failure reason
@@ -78,7 +94,7 @@ merge_results() {
                     [[ "${reason}" == "unknown" ]] && reason="extraction_failed"
                 fi
 
-                echo "${sample},failed,${reason},NA,NA,NA,NA,NA,NA"
+                echo "${sample},failed,${reason}${NA_COLS}"
                 FAILED_SAMPLES+=("${sample}")
                 FAILED_REASONS+=("${reason}")
             fi

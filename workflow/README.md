@@ -1,93 +1,34 @@
 # PMLB Neoantigen Discovery Pipeline
 
 Multi-cancer organoid neoantigen discovery pipeline. Processes HLA typing, novel transcript
-extraction, SNV/indel filtering, CNV analysis, and novel transcript peptide tiling into a
-unified, ranked neoantigen candidate list per sample.
+extraction, somatic mutation application, and SNV/indel filtering into a unified, ranked
+neoantigen candidate list per sample.
 
 This pipeline is designed for **tumor-only** samples — no matched normal tissue is available.
-That constraint shapes several design choices documented below.
 
 ---
 
 ## Pipeline overview
 
 ```
-RNA BAMs  ──► 01 HLA typing (arcasHLA)        ──► hla_summary.csv
-          ──► 02 Novel transcript extraction   ──► per-sample FASTA / GTF
+RNA BAMs  ──► 01 HLA typing (arcasHLA)           ──► hla_summary.csv
+          ──► 02 Novel transcript extraction       ──► per-sample FASTA / GTF
+          ──► 03 TransDecoder ORF prediction       ──► per-sample .transdecoder.pep
+
+cDNA ORF FASTA + somatic MAF
+          ──► mutation_reference/01 Build mutated DB   ──► mutated_proteins/
+          ──► mutation_reference/02 Novel ORFs         ──► novel_proteins/
+          ──► mutation_reference/03 Merge              ──► final FragPipe DB
 
 MAF + CNV + TPM + HLA
-          ──► Step 1: SNV/indel filter         ──► results/snv/
-Novel FASTAs
-          ──► Step 2: Novel peptide tiling     ──► results/novel/
-CNV matrix
-          ──► Step 3: CNV cohort analysis      ──► results/cnv/
-
-results/snv + results/novel + results/cnv
-          ──► Step 4: Unified integration      ──► results/integrated/
-                      (pre-MHC run)
-
-results/integrated
-          ──► pVACseq (SNV MHC prediction)
-          ──► MHCflurry (novel peptide prediction)
-
-MHC results
-          ──► Step 4 re-run --post-mhc         ──► final ranked candidates
+          ──► snv/   SNV/indel filtering          ──► results/snv/      [planned]
+          ──► cnv/   CNV cohort analysis           ──► results/cnv/      [planned]
+          ──► novel/ Novel peptide tiling          ──► results/novel/    [planned]
+          ──► integrate/ Unified integration       ──► results/integrated/ [planned]
 ```
 
-Steps 01–02 run on the **cluster** via SLURM. Steps 1–4 run **locally** (or on the cluster).
-
----
-
-## Design rationale: tumor-only sequencing
-
-Without a matched normal sample, two germline contamination problems arise that don't exist
-in paired tumor/normal analysis:
-
-**1. Rare germline variants that pass FILTER=PASS.** Variant callers like Mutect2 use a
-panel-of-normals (PoN) and a gnomAD germline resource to flag common variants. However,
-private or population-rare germline variants (gnomAD AF < 0.1%) are not flagged and appear
-identical to somatic mutations. These would generate peptides from the patient's own germline
-protein sequence — not neoantigens.
-
-**2. False-positive indels in repetitive regions.** Sequencing errors in homopolymer tracts
-and tandem repeats produce artefactual indel calls that pass standard quality filters. In
-matched-normal analysis these are easily removed; in tumor-only they must be identified by
-context.
-
-The pipeline addresses both problems through a **somatic confidence score** that incorporates
-VAF, depth, gnomAD frequency, gene-level germline risk, and RNA support — separating the
-question "is this call somatic?" from "is the mutant peptide expressed and presentable?".
-
----
-
-## Three-axis scoring model
-
-All SNV/indel candidates carry three independent scores that are kept separate throughout
-the pipeline and only combined at the final ranking step:
-
-```
-somatic_confidence  ×  bio_opportunity  ×  mhc_presentation
-     (0..1)             (0..∞, pre-MHC)      (0..1, post-MHC)
-```
-
-**somatic_confidence** answers: *how likely is this variant truly somatic, not germline?*
-Inputs: VAF, read depth, alt count, gnomAD/ExAC AF, FILTER field, gene-level germline risk,
-RNA alt support (if available).
-
-**bio_opportunity** answers: *how much mutant peptide substrate is available for MHC loading?*
-Inputs: `log2(TPM + 1) × cnv_boost × expression_confidence`. Expression confidence is raised
-(1.2×) if RNA alt reads confirm the mutation is expressed, or lowered (0.8×) if RNA coverage
-is present but no alt reads are seen (allele-specific silencing).
-
-**mhc_presentation** answers: *how well does the mutant peptide bind and distinguish itself
-from the wildtype?* Computed post-MHC: `affinity_score(IC50) × foreignness_score(FC_wt_mt) ×
-apm_penalty`. APM penalty applies when B2M or TAP1/2 is lost (CNV = -2) — presentation is
-impaired regardless of IC50.
-
-These axes are intentionally not multiplied until needed because they answer different
-biological questions. Inspecting them separately is useful for debugging anomalous candidates:
-a high-somatic-confidence, high-bio-opportunity candidate with low mhc_presentation has an
-expression problem, not a somatic calling problem.
+Steps 01–03 (RNA) and the mutation_reference pipeline run on the **cluster** via SLURM.
+SNV/CNV/novel/integration steps run **locally**.
 
 ---
 
@@ -99,19 +40,20 @@ data/
 │   └── Org_exome.data_mutations_extended.gt4.202507.txt  # somatic MAF (VEP-annotated)
 ├── cnv/
 │   └── data_CNV.txt                                       # Hugo_Symbol × samples, -2..2
-└── rna/
-    ├── batch_corrected_TPM_all_genes.csv                  # Ensembl gene IDs × samples
-    ├── hla_summary.csv                                    # arcasHLA typed alleles
-    ├── metadata.csv                                       # sample → cancer_type, batch
-    └── 260313_manifest_final.tsv                          # SLURM job manifest (cluster)
+├── rna/
+│   ├── batch_corrected_TPM_all_genes.csv                  # Ensembl gene IDs × samples
+│   ├── hla_summary.csv                                    # arcasHLA typed alleles
+│   ├── metadata.csv                                       # sample → cancer_type, batch
+│   └── 260313_manifest_final.tsv                          # SLURM job manifest
+├── reference/                                             # reference genome/annotation files
+└── atac/                                                  # ATAC-seq data
 ```
 
+Cluster source files:
 ```
-results/                   (generated by local scripts)
-├── snv/                   # Step 1 outputs
-├── cnv/                   # Step 3 outputs
-├── novel/                 # Step 2 outputs
-└── integrated/            # Step 4 outputs
+/cluster/projects/livingbank/Project/Pan-organoid/
+├── Mutation/Org_exome.data_mutations_extended.gt4.202507.txt
+└── CNV/data_CNV.txt
 ```
 
 ---
@@ -121,27 +63,44 @@ results/                   (generated by local scripts)
 ```
 /cluster/projects/livingbank/workspace/vivian/neo/
 ├── 260313_manifest_final.tsv
-├── hla/                        # Step 01 outputs
+├── hla/                                 # Step 01 outputs
 │   ├── logs/
 │   └── <sample>/
 │       ├── <sample>.genotype.json
 │       └── <sample>.genotype.tsv
-└── novel/                      # Step 02 outputs
+├── novel/                               # Step 02 outputs
+│   ├── logs/
+│   ├── novel_translated/                # TransDecoder .pep files
+│   ├── all_novel_sequences.fasta
+│   ├── all_novel_transcripts.gtf
+│   ├── novel_transcripts_summary.csv
+│   └── <sample>/
+│       ├── <sample>_gffcmp.annotated.gtf
+│       ├── <sample>_novel_transcripts.gtf
+│       └── <sample>_novel_sequences.fasta
+└── mutation_reference/                  # mutation_reference pipeline outputs
     ├── logs/
-    ├── all_novel_sequences.fasta
-    ├── all_novel_transcripts.gtf
-    ├── novel_transcripts_summary.csv
-    └── <sample>/
-        ├── <sample>_gffcmp.annotated.gtf
-        ├── <sample>_novel_transcripts.gtf
-        └── <sample>_novel_sequences.fasta
+    ├── orf/
+    │   └── cdna_orfs.fasta              # Step 00 output
+    ├── mutated_proteins/                # Step 01 output
+    │   ├── all_samples_mutated_proteins.fasta
+    │   ├── per_sample/<SAMPLE>.mutated_proteins.fasta
+    │   ├── mutation_application_report.tsv
+    │   ├── translation_report.tsv
+    │   └── validation_report.tsv
+    ├── novel_proteins/                  # Step 02 output
+    │   └── <SAMPLE>.novel_proteins.fasta
+    └── final/                           # Step 03 output (FragPipe DB)
+        ├── all_samples_combined.fasta
+        ├── per_sample/<SAMPLE>.fragpipe_db.fasta
+        └── merge_summary.tsv
 ```
 
 Input BAMs (STAR-aligned) and StringTie GTFs:
 ```
 /cluster/projects/livingbank/workspace/vivian/RNA/process/rna/<sample>/
     <sample>_Aligned.sortedByCoord.out.bam
-    <sample>_annotation.gtf    (StringTie output, required for Step 02 and Step 2)
+    <sample>_annotation.gtf    (StringTie output, required for Step 02)
 ```
 
 ---
@@ -154,6 +113,7 @@ Input BAMs (STAR-aligned) and StringTie GTFs:
   - stringtie2 / gffcompare: `/cluster/home/t117036uhn/local_soft/`
 - Reference: `hg38_ek12` at `/cluster/projects/livingbank/workspace/references/hg38_ek12/`
 - Reference GTF: `/cluster/projects/livingbank/workspace/references/hg_38/gencode.v25.annotation.gtf`
+- GENCODE v47 pc_transcripts: `/cluster/projects/livingbank/workspace/references/gencode.v47.pc_transcripts.fa.gz`
 
 ---
 
@@ -162,15 +122,8 @@ Input BAMs (STAR-aligned) and StringTie GTFs:
 Runs [arcasHLA](https://github.com/RabadanLab/arcasHLA) on each sample's STAR-aligned BAM
 to type HLA-A, -B, -C alleles at two-field resolution.
 
-**Why arcasHLA from RNA-seq?** HLA alleles are typed from RNA-seq rather than the exome
-because the MHC locus is highly polymorphic and difficult to type reliably from exome data
-alone. RNA-seq provides cleaner read pileup at HLA loci. Two-field resolution (e.g.,
-`HLA-A02:01`) is sufficient for NetMHCpan and MHCflurry binding prediction.
-
-**Fallback:** If arcasHLA fails (typically due to low RNA coverage at HLA loci), the sample
-is assigned population-frequency priors (`HLA-A02:01`, `HLA-A24:02`, `HLA-B07:02`,
-`HLA-B44:02`, `HLA-C07:01`, `HLA-C07:02`). These are the six most common alleles in
-European populations and produce reasonable MHC coverage but reduce prediction specificity.
+**Fallback:** If arcasHLA fails, the sample is assigned population-frequency priors
+(`HLA-A02:01`, `HLA-A24:02`, `HLA-B07:02`, `HLA-B44:02`, `HLA-C07:01`, `HLA-C07:02`).
 Imputed samples are flagged with `hla_imputed=True`.
 
 ### Scripts
@@ -209,529 +162,145 @@ tail -f /cluster/projects/livingbank/workspace/vivian/neo/hla/logs/hla_<JOBID>_<
 
 ## Step 02 — Novel Transcript Extraction (cluster) · `rna/02_extract_novel/`
 
-Annotates per-sample StringTie assemblies against GENCODE v25 with
-[gffcompare](https://ccb.jhu.edu/software/stringtie/gffcompare.shtml), extracts novel
-transcripts, and exports sequences with
-[gffread](https://github.com/gpertea/gffread). [TransDecoder](https://github.com/TransDecoder/TransDecoder)
-is run per sample to predict ORFs.
+Annotates per-sample StringTie assemblies against GENCODE v25 with gffcompare, extracts
+novel transcripts (class codes `u`, `n`, `j`), and exports sequences with gffread.
 
-**Why these three class codes?**
-
-| Code | Description | Rationale |
-|---|---|---|
-| `u` | Intergenic — novel locus, no overlap with any reference gene | Highest immunogenic potential; sequence is completely absent from normal proteome. Requires stricter TPM filter (default 2.0) because intergenic transcription has higher baseline noise. |
-| `n` | Intronic — transcript fully within a known gene intron | Retained introns or intronic promoters. Sequence is novel but may have weak expression. |
-| `j` | Novel junction — known gene with at least one novel splice site | Exon skipping, alternative 5'/3' splice sites. Peptides can span the novel junction. |
-
-Class codes `e`, `c`, `s`, `x` (overlapping/antisense to known genes) and `=`/`k`/`m`
-(matching known transcripts) are excluded — they are not novel enough to yield non-self peptides.
+| Class code | Description |
+|---|---|
+| `u` | Intergenic — novel locus, no overlap with any reference gene |
+| `n` | Intronic — transcript fully within a known gene intron |
+| `j` | Novel junction — known gene with at least one novel splice site |
 
 ### Scripts
 
 | Script | Purpose |
 |---|---|
 | `extract_novel.sh` | SLURM array — one task per sample |
-| `submit_extract_novel.sh` | Submission wrapper: validates StringTie inputs, submits array, merges results |
+| `submit_extract_novel.sh` | Submission wrapper |
 
 ### Run
 
 ```bash
-./submit_extract_novel.sh --dry-run    # check StringTie inputs are present
-./submit_extract_novel.sh              # submit jobs
-./submit_extract_novel.sh --merge-only # merge per-sample outputs after completion
+./submit_extract_novel.sh --dry-run
+./submit_extract_novel.sh
+./submit_extract_novel.sh --merge-only
 ```
 
 ### Outputs
 
-Per sample (`novel/<sample>/`):
+Per sample (`novel/<sample>/`): annotated GTF, filtered GTF, novel FASTA.
 
-| File | Description |
-|---|---|
-| `<sample>_gffcmp.annotated.gtf` | Full gffcompare annotation |
-| `<sample>_novel_transcripts.gtf` | Filtered GTF (u/n/j only) |
-| `<sample>_novel_sequences.fasta` | FASTA of novel transcript sequences |
-| `<sample>_novel_sequences.fasta.transdecoder.pep` | TransDecoder predicted ORFs (protein) |
-| `<sample>_novel_sequences.fasta.transdecoder_dir/` | TransDecoder working files |
-
-Merged (`novel/`):
-
-| File | Description |
-|---|---|
-| `all_novel_transcripts.gtf` | Concatenated novel GTF across all samples |
-| `novel_transcripts_summary.csv` | Per-sample counts by class code and ORFs predicted |
+Collected (`novel/`): `all_novel_sequences.fasta`, `all_novel_transcripts.gtf`,
+`novel_transcripts_summary.csv`.
 
 ---
 
-## Step 1 — SNV/Indel Filtering · `snv/filter_snv_neoantigens.py`
+## Step 03 — TransDecoder ORF Prediction (cluster) · `rna/03_translate/`
 
-Filters the somatic MAF and annotates each mutation with somatic confidence, expression
-opportunity, copy number context, and HLA alleles. This is the primary germline
-decontamination step in the tumor-only pipeline.
-
-### Key design choices
-
-**Separate somatic confidence from biological opportunity.** The previous scoring model
-(`log2(TPM+1) × cnv_boost`) mixed two orthogonal signals. A variant with high expression
-but uncertain somatic origin is not the same as one with moderate expression and high
-somatic confidence. Separating them lets you inspect and filter on each axis independently
-in downstream analysis.
-
-**gnomAD/ExAC hard filter at 0.1% (AF > 0.001).** This threshold is intentionally
-conservative. At 0.1% allele frequency in gnomAD, a variant has ~1 in 1,000 chance of
-being germline heterozygous in any given individual — too high a risk for a neoantigen
-target, where misidentifying a germline variant as somatic could lead to an autoimmune
-response. The soft penalty zone (0.01%–0.1%) allows rare variants through with reduced
-confidence rather than losing potentially real somatic events.
-
-**`clustered_events` is not a germline filter.** Mutect2's `clustered_events` flag marks
-adjacent somatic mutations (e.g., two SNVs within 10 bp). These are real somatic events —
-often oligoclonal driver mutations — but are not artifacts. The previous code accepted
-only `PASS`, silently discarding them. They now receive a 0.7× confidence penalty.
-
-**GERMLINE_RISK_GENES hard exclusion when gnomAD_AF > 0.** Genes like TTN, MUC16, OBSCN,
-DNAH5/7/9/11, and others are extremely large (>10 kb CDS) and accumulate frequent rare
-germline missense variants in every individual. When a variant in one of these genes has
-any population frequency signal, the prior probability of germline origin is much higher
-than for a cancer gene. Variants with gnomAD_AF = 0 in these genes still receive a 0.4×
-confidence penalty.
-
-**Per-class alt-count thresholds.** In-frame indels have a materially higher false-positive
-rate than SNVs, particularly in homopolymer runs. The `weak_indel` flag (< 8 alt reads)
-applies a 0.5× confidence penalty and flags the variant for RNA rescue review rather than
-hard-excluding it, since some real tumor indels are subclonal.
-
-**Splice-site variants require RNA confirmation.** A `Splice_Site` classification in the
-MAF tells us a splice donor or acceptor is disrupted, but not what the resulting peptide
-sequence is. DNA sequence alone cannot predict the alternative splicing product reliably.
-These variants are carried through to the integration step with `splice_site=True` and are
-expected to be matched against RNA-confirmed junctions from the novel transcript module.
-
-### Filters applied (in order)
-
-| Filter | Threshold | Rationale |
-|---|---|---|
-| Variant classification | Coding classes only | Non-protein-altering variants do not produce neoantigens |
-| FILTER field | `PASS` or `clustered_events` | All other Mutect2 flags indicate artifacts or germline |
-| Tumor depth | ≥ 10× | Minimum coverage for a reliable allele fraction estimate |
-| Tumor VAF | ≥ 0.03 | Organoids are high-purity; VAF < 3% is at or below noise floor |
-| Normal exclusion | Drop `.NPT` / `.NPO` | These are germline samples, not tumors |
-| gnomAD hard filter | max(gnomAD_AF, ExAC_AF) > 0.001 | Likely germline even if FILTER=PASS |
-| Germline risk gene + any pop AF | Gene in GERMLINE_RISK_GENES and gnomAD_AF > 0 | High background germline mutation rate |
-| Per-class alt count | SNV ≥ 3, frameshift ≥ 5, in-frame ≥ 3 | Indels have higher FP rate |
-| CNV hard exclusion | CNV = -2 AND TPM < 1 | Gene physically deleted and unexpressed |
-| TPM threshold | ≥ 1.0 | Adjustable with `--tpm-threshold` |
-
-### Somatic confidence score (0..1)
-
-```python
-somatic_confidence = vaf_score × depth_score × alt_score
-                   × gnomad_score × filter_score × gene_score × indel_score × repeat_score
-                   + rna_rescue  # additive bonus up to +0.3 if RNA confirms mutation
-
-# VAF score:     0.0 at VAF=0, 0.6 at 0.08, 0.8 at 0.15, 1.0 at ≥ 0.30
-# gnomad_score:  1.0 if gnomAD_AF=0, 0.7 if <0.01%, 0.3 if 0.01–0.1%
-# gene_score:    0.4 if gene is in GERMLINE_RISK_GENES, else 1.0
-# rna_rescue:    up to 0.3 additional if rna_alt_count ≥ 3
-```
-
-### Tiering
-
-| Tier | Criteria |
-|---|---|
-| `1` | somatic_confidence ≥ 0.7 AND VAF ≥ 0.10 AND TPM ≥ 3.0 AND gnomAD_AF = 0 |
-| `2` | somatic_confidence ≥ 0.5 AND VAF ≥ 0.05 AND TPM ≥ 1.0 |
-| `3` | somatic_confidence ≥ 0.3 |
-| `DEPRIORITIZED` | somatic_confidence < 0.3 — kept in output but excluded from MHC prediction by default |
-
-Note: tiers are strings (`"1"`, `"2"`, `"3"`, `"DEPRIORITIZED"`) to support the fourth category
-without using an integer encoding that implies false ordering between `3` and `DEPRIORITIZED`.
-
-### Annotations added
-
-| Column | Description |
-|---|---|
-| `gnomad_af` | `max(gnomAD_AF, ExAC_AF, gnomAD_NFE_AF, ...)` |
-| `gnomad_low_freq` | True if 0 < gnomad_af ≤ 0.001 (soft penalty applied) |
-| `germline_risk_gene` | True if gene in GERMLINE_RISK_GENES |
-| `weak_indel` | True if in-frame indel with t_alt_count < 8 |
-| `nmd_predicted` | True for frameshift and nonsense variants (NMD likely; peptide requires RNA confirmation) |
-| `repetitive_context` | True if VEP annotates variant in homopolymer/repeat region |
-| `rna_support` | `confirmed` / `undetected` / `unassessable` / `unavailable` |
-| `cnv` | Integer copy number for this gene in this sample (-2..2) |
-| `cnv_boost` | Multiplicative CNV modifier for bio_opportunity |
-| `cnv_vaf_discordant` | True if observed VAF deviates > 0.25 from clonal het expectation given CNV |
-| `tpm_gene` | Batch-corrected gene-level TPM |
-| `hla_alleles` | Comma-separated NetMHCpan-format alleles for this sample |
-| `hla_imputed` | True if HLA typing failed (population priors used) |
-| `hla_loh_risk` | True if any HLA-A/B/C has CNV ≤ -1 |
-| `presentation_impaired_genes` | B2M/TAP1/TAP2/TAPBP with CNV = -2 |
-| `somatic_confidence` | 0..1 somatic confidence score |
-| `bio_opportunity` | `log2(TPM+1) × cnv_boost × expression_confidence` |
-| `score_pre_mhc` | `somatic_confidence × bio_opportunity` |
-| `tier_pre_mhc` | 1 / 2 / 3 / DEPRIORITIZED |
+Runs [TransDecoder](https://github.com/TransDecoder/TransDecoder) on the per-sample novel
+FASTAs to produce `.transdecoder.pep` files. Minimum ORF length is 25 aa (TransDecoder
+default is 100 aa, which is too strict for short junction transcripts).
 
 ### Run
 
 ```bash
-# Default: uses data/ paths, writes to results/snv/
-python workflow/snv/filter_snv_neoantigens.py
+N=$(find /cluster/projects/livingbank/workspace/vivian/neo/novel/novel_transcripts \
+    -type f -name '*_novel_sequences.fasta' \
+    ! -path '/cluster/projects/livingbank/workspace/vivian/neo/novel/novel_transcripts/logs/*' \
+    | wc -l)
 
-# Per-sample output files:
-python workflow/snv/filter_snv_neoantigens.py --per-sample
+sbatch --array=0-$((N-1)) workflow/rna/03_translate/run_transdecoder.sh
 
-# Stricter expression threshold:
-python workflow/snv/filter_snv_neoantigens.py --tpm-threshold 3.0
-
-# All options:
-python workflow/snv/filter_snv_neoantigens.py --help
+# Check one array task without running TransDecoder
+SLURM_ARRAY_TASK_ID=0 bash workflow/rna/03_translate/run_transdecoder.sh --dry-run
 ```
+
+The array is indexed by actual `*_novel_sequences.fasta` files and supports both
+flat files under `novel_transcripts/` and nested
+`novel_transcripts/<sample>/<sample>_novel_sequences.fasta` layouts. The job
+requests 64G because `TransDecoder.Predict` can exceed smaller allocations on
+large per-sample novel FASTAs.
 
 ### Outputs
 
+Written alongside each FASTA in `novel_translated/`:
+
 | File | Description |
 |---|---|
-| `results/snv/all_samples_filtered.tsv` | Merged filtered mutations with all annotations |
-| `results/snv/summary.tsv` | Per-sample counts, tier breakdown, flag summaries |
-| `results/snv/sample_matching_report.tsv` | Cross-file sample matching audit |
-| `results/snv/per_sample/<sample>.filtered.maf` | Per-sample (with `--per-sample`) |
-
-### Cohort statistics (as of 2026-04-02)
-
-| Metric | Value |
-|---|---|
-| Input mutations | 112,037 |
-| After all filters | ~31,000 |
-| Samples with candidates | ~159 |
-| HLA LOH risk samples | ~126 / 159 |
-| APM-impaired samples | ~80 / 159 |
-| HLA imputation needed | 0 (all typed) |
+| `<sample>_novel_sequences.fasta.transdecoder.pep` | Predicted protein sequences |
+| `<sample>_transdecoder_wd/` | TransDecoder working directory |
 
 ---
 
-## Step 2 — Novel Transcript Neoantigen Processing · `novel/process_novel_neoantigens.py`
+## mutation_reference pipeline (cluster) · `mutation_reference/`
 
-Takes per-sample novel transcript FASTAs from Step 02 and produces tiled 8–11-mer
-peptide candidates for MHC-I binding prediction with MHCflurry.
+Builds sample-specific variant-centered mutant and novel protein FASTA databases for FragPipe
+immunopeptidomics searches. See `mutation_reference/README.md` for full documentation.
 
-**Why process novel transcripts at all?** Tumor-specific alternative splicing, intronic
-retention, and transcription from novel loci generate peptides with no equivalent in the
-normal proteome. These are inherently non-self without needing a somatic mutation.
-However, they also have a higher false-positive rate because: (a) expression can be low
-and noisy, and (b) some may be expressed at low levels in normal tissues. The GTEx filter
-addresses (b) — any transcript whose parent gene is expressed > 5 TPM in 40 non-immune
-normal tissues is penalized (0.5× score), not excluded, because tumor-specific isoforms
-can arise from genes that are expressed at low levels normally.
+### Overview
 
-**ORF detection priority:** TransDecoder (run per sample in Step 02) is preferred over
-6-frame translation because it uses a trained model to distinguish coding from non-coding
-ORFs. The 6-frame fallback is used only when the `.transdecoder.pep` file is absent.
+```
+cDNA ORF FASTA + somatic MAF  →  map variants to ORF/codon → translate local context → compact mutant FASTA
+novel transcript .pep          →  reformat headers            →              →  novel protein FASTA
+                                                                                        ↓
+                                                                           FragPipe database search
+```
 
-**Source weights** reflect decreasing confidence in biological novelty:
-- `novel_u` (intergenic, 1.0): sequence has no overlap with any known gene
-- `novel_j` (novel junction, 0.9): known gene, novel exon boundary
-- `novel_n` (intronic, 0.8): known gene, intronic region
+### Scripts
 
-### Processing steps
-
-1. Parse per-sample novel FASTA files
-2. Identify ORFs (TransDecoder preferred; 6-frame translation fallback, min 25 aa)
-3. Tile all 8–11-mer peptides from each ORF
-4. Filter by StringTie TPM — class `u` uses stricter threshold (default 2.0) than `n`/`j` (1.0)
-5. Flag parent gene expression in GTEx normals if `--gtex-file` provided
-6. Annotate per-sample HLA alleles
-7. Write MHCflurry-ready input CSV
+| Script | Purpose |
+|---|---|
+| `00_fetch_cdna_orfs.sh` | Extract CDS sequences from GENCODE v47 → `cdna_orfs.fasta` |
+| `01_build_mutated_db.sh` | Map somatic mutations, translate local altered contexts, write compact mutant FASTAs |
+| `02_novel_orfs.sh` | SLURM array: reformat TransDecoder .pep → FragPipe FASTA |
+| `03_merge_fragpipe_db.sh` | Combine mutated + novel into final per-sample DB |
+| `submit_build_db.sh` | Top-level wrapper: chains all stages with SLURM dependencies |
 
 ### Run
 
 ```bash
-# On cluster (TransDecoder pep files are auto-detected per sample from Step 02):
-python workflow/novel/process_novel_neoantigens.py \
-  --novel-dir /cluster/.../neo/novel \
-  --annotation-dir /cluster/.../RNA/process \
-  --outdir /cluster/.../neo/results/novel
+cd /cluster/projects/livingbank/workspace/vivian/neo/mutation_reference
 
-# With GTEx normal-expression filtering:
-python workflow/novel/process_novel_neoantigens.py \
-  --novel-dir /cluster/.../neo/novel \
-  --annotation-dir /cluster/.../RNA/process \
-  --gtex-file /path/to/GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct
+# Dry run to verify paths
+bash submit_build_db.sh --with-novel --dry-run
 
-# Dry run (check what files exist without processing):
-python workflow/novel/process_novel_neoantigens.py \
-  --novel-dir /cluster/.../neo/novel --dry-run
+# Full pipeline: mutated + novel + merge
+bash submit_build_db.sh --with-novel \
+    --sample-manifest /cluster/projects/livingbank/workspace/vivian/neo/260313_manifest_final.tsv
+
+# Mutated proteins only (no novel)
+bash submit_build_db.sh \
+    --sample-manifest /cluster/projects/livingbank/workspace/vivian/neo/260313_manifest_final.tsv
+
+# Merge only (steps 01 and 02 already done)
+bash submit_build_db.sh --merge-only
 ```
 
-### Outputs
+### Sample manifest note
 
-| File | Description |
-|---|---|
-| `results/novel/all_samples_novel_peptides.tsv` | Full peptide table with metadata |
-| `results/novel/mhcflurry_input.csv` | Allele + peptide CSV for MHCflurry |
-| `results/novel/summary.tsv` | Per-sample counts by class and tier |
-| `results/novel/per_sample/<sample>_peptides.tsv` | Per-sample (with `--per-sample`) |
+`--sample-manifest` accepts `260313_manifest_final.tsv` directly. The `_pmlb`/`_novo`
+suffixes in the `sample` column are stripped automatically to match MAF
+`Tumor_Sample_Barcode` values.
 
 ---
 
-## Step 3 — CNV Cohort Analysis · `cnv/analyze_cnv.py`
+## Design rationale: tumor-only sequencing
 
-Generates per-sample CNV flags and cohort-level copy number summaries. Used as input to
-Step 4 to override per-mutation CNV annotations with sample-level context.
+Without a matched normal sample, germline contamination problems arise that don't exist in
+paired tumor/normal analysis. The pipeline addresses these through a **somatic confidence
+score** incorporating VAF, depth, gnomAD frequency, gene-level germline risk, and RNA
+support.
 
-**Why run CNV analysis separately?** The CNV matrix contains both gene-level context
-(used in Step 1 to annotate individual mutations) and sample-level flags that apply
-across all candidates for a sample (HLA LOH, APM impairment, oncogene amplification).
-Running this as a separate step makes the cohort-wide CNV landscape inspectable and
-allows the Step 4 merge to override individual mutation annotations with the richer
-per-sample flags computed here.
+**Three-axis scoring model** (planned for SNV/integration steps):
 
-**Three CNV signals and their neoantigen implications:**
-
-| Signal | Condition | Effect |
-|---|---|---|
-| HLA LOH | HLA-A/B/C CNV ≤ -1 | One allele copy potentially lost. Predictions against the lost allele may still be made (allele loss is not confirmed at genotype level) but the `hla_loh_risk` flag should inform clinical interpretation. |
-| APM deletion | B2M/TAP1/TAP2/TAPBP CNV = -2 | Complete loss of peptide loading machinery. Affects all peptides in the sample. Applied as a `mhc_presentation` penalty (0.5×) post-MHC, not a hard exclusion — the sample may still present some peptides via TAP-independent pathways. |
-| Oncogene amplification | CNV ≥ 2 at known oncogene | More gene copies = more mutant transcript substrate. This is why CNV boost applies only to `bio_opportunity`, not to `somatic_confidence`. Amplification doesn't make a mutation more likely to be somatic; it makes its peptide product more abundant. |
-
-**Why not hard-exclude APM-impaired candidates?** TAP-independent presentation (via
-non-classical HLA-E, HLA-G, or direct ER loading of short peptides) still occurs in some
-tumors even when TAP1/2 is deleted. Excluding these candidates outright would miss
-immunologically meaningful targets. The 0.5× penalty reduces their rank without removing them.
-
-### Run
-
-```bash
-# Default: uses data/cnv/data_CNV.txt, writes to results/cnv/
-python workflow/cnv/analyze_cnv.py
-
-# Custom recurrence threshold (20% of cohort):
-python workflow/cnv/analyze_cnv.py --recurrence-threshold 0.2
-
-# Full options:
-python workflow/cnv/analyze_cnv.py --help
+```
+somatic_confidence  ×  bio_opportunity  ×  mhc_presentation
+     (0..1)             (0..∞, pre-MHC)      (0..1, post-MHC)
 ```
 
-### Outputs
-
-| File | Description |
-|---|---|
-| `results/cnv/cnv_sample_flags.tsv` | Per-sample HLA LOH, APM, amplification flags |
-| `results/cnv/cnv_amplified_genes.tsv` | All CNV ≥ 2 genes per sample |
-| `results/cnv/cnv_recurrent_events.tsv` | Genes amplified/deleted in > threshold% of cohort |
-| `results/cnv/cnv_cancer_genes.tsv` | Known oncogene / TSG / APM CNV values |
-| `results/cnv/cnv_summary.tsv` | Cohort-wide statistics |
-
-### Cohort statistics (as of 2026-04-02, 310 samples)
-
-| Metric | Value |
-|---|---|
-| HLA LOH risk | 82% of samples |
-| APM impaired (B2M/TAP1/TAP2/TAPBP) | 55% of samples |
-| ≥ 1 amplified oncogene | 54% of samples |
-| ≥ 1 homozygously deleted TSG | 28% of samples |
-
----
-
-## Step 4 — Unified Integration · `integrate/unify_candidates.py`
-
-Merges SNV/indel candidates (Step 1) and novel transcript candidates (Step 2), applies
-sample-level CNV flags (Step 3), and produces a single ranked candidate list per sample.
-
-Run **before** MHC prediction to generate pVACseq/MHCflurry input files. Re-run **after**
-MHC prediction with `--post-mhc` to compute the final three-axis score and post-MHC tiers.
-
-**Why two runs of the same script?** MHC binding prediction (pVACseq, MHCflurry) is
-computationally expensive and runs on the cluster. Separating the pre-MHC and post-MHC
-integration steps means the expensive prediction is only run on candidates that have
-already passed somatic confidence and expression filters — avoiding wasted compute on
-low-confidence or unexpressed variants.
-
-### Scoring model
-
-**Pre-MHC score** (for initial ranking and MHC job submission):
-```
-bio_opportunity = log2(TPM + 1) × cnv_boost × expression_confidence × source_weight
-score_pre_mhc   = somatic_confidence × bio_opportunity
-
-source_weight:        snv=1.0, novel_u=1.0, novel_j=0.9, novel_n=0.8
-cnv_boost:            -2→0.0  -1→0.8  0→1.0  +1→1.2  +2→1.5
-expression_confidence: 1.2 if RNA alt confirmed, 0.8 if RNA alt undetected, 1.0 otherwise
-```
-
-**Post-MHC score** (after pVACseq / MHCflurry):
-```
-mhc_presentation = affinity_score(IC50) × foreignness_score(fold_change_wt_mt) × apm_penalty
-final_score      = somatic_confidence × bio_opportunity × mhc_presentation
-
-affinity_score:    1.0 at IC50 ≤ 50 nM, 0.8 at 500, 0.3 at 1000, ~0 above 3000
-foreignness_score: min(1.0, log2(fold_change_wt_mt) / 5)
-                   — 1.0 for frameshifts/nonsense where no WT peptide exists
-apm_penalty:       0.5 if B2M or TAP1+TAP2 lost, 0.7 if partial APM loss, else 1.0
-```
-
-**Why include `foreignness_score`?** A peptide with IC50 = 50 nM that is also presented
-by normal cells (WT binds equally well, fold change ≈ 1) is not a neoantigen — it is a
-self-peptide that T cells are tolerized against. `fold_change_wt_mt = ic50_wt / ic50_mt`
-measures how much worse the wildtype peptide binds relative to the mutant. Higher values
-mean the mutation makes the peptide more visible to the immune system.
-
-For frameshifts and nonsense variants, `fold_change_wt_mt` is set to `None` and
-`foreignness_score` defaults to 1.0, since the novel C-terminal sequence has no wildtype
-equivalent that T cells would be tolerized against.
-
-### Tiering
-
-**Pre-MHC tiers** (string values):
-
-| Tier | Criteria |
-|---|---|
-| `1` | somatic_confidence ≥ 0.7 AND VAF ≥ 0.10 AND TPM ≥ 3.0 AND gnomAD_AF = 0 |
-| `2` | somatic_confidence ≥ 0.5 AND VAF ≥ 0.05 AND TPM ≥ 1.0 |
-| `3` | somatic_confidence ≥ 0.3 |
-| `DEPRIORITIZED` | somatic_confidence < 0.3 — annotated but not submitted to MHC prediction |
-
-For novel transcripts, tiers are based on expression and GTEx status only (no somatic confidence gate).
-
-**Post-MHC tiers:**
-
-| Tier | Criteria |
-|---|---|
-| `1` | IC50 ≤ 500 nM AND percentile rank ≤ 2 AND pre-MHC tier 1 |
-| `2` | IC50 ≤ 1000 nM AND somatic_confidence ≥ 0.5 |
-| `3` | IC50 ≤ 2000 nM |
-| `EXCLUDED` | IC50 > 2000 nM or no MHC prediction available |
-
-### Unified schema
-
-All rows (SNV and novel) share a common column set. SNV-specific columns (e.g., `vaf`,
-`gnomad_af`, `hgvsp_short`) are `NaN` for novel rows. Novel-specific columns (e.g.,
-`gtex_normal_expressed`) are `False`/`NaN` for SNV rows.
-
-Key columns:
-
-| Column | SNV | Novel |
-|---|---|---|
-| `somatic_confidence` | 0..1 from scoring model | 1.0 (trusted by design) |
-| `bio_opportunity` | log2(TPM+1) × cnv_boost × expr_conf | log2(TPM+1) × source_weight × gtex_penalty |
-| `vaf` | DNA tumor VAF | NaN |
-| `rna_support` | confirmed/undetected/unassessable/unavailable | unavailable |
-| `gnomad_af` | max population AF | 0.0 |
-| `peptide_wt` / `ic50_wt` | from pVACseq (missense, in-frame indel) | NaN |
-| `fold_change_wt_mt` | from pVACseq | NaN |
-| `nmd_predicted` | True for frameshift/nonsense | False |
-
-### Run
-
-```bash
-# Pre-MHC: merge, score, generate pVACseq input files
-python workflow/integrate/unify_candidates.py \
-  --per-sample \
-  --pvacseq-input
-
-# With all inputs (after Steps 1–3):
-python workflow/integrate/unify_candidates.py \
-  --snv results/snv/all_samples_filtered.tsv \
-  --novel results/novel/all_samples_novel_peptides.tsv \
-  --cnv-flags results/cnv/cnv_sample_flags.tsv \
-  --per-sample
-
-# After MHC prediction:
-python workflow/integrate/unify_candidates.py \
-  --post-mhc \
-  --pvacseq-results /path/to/pvacseq_output/ \
-  --mhcflurry-results results/novel/mhcflurry_predictions.csv \
-  --per-sample
-```
-
-### pVACseq invocation (per sample)
-
-After `--pvacseq-input` generates allele files:
-
-```bash
-SAMPLE=PPTO0002.TPO
-HLA=$(cat results/integrated/pvacseq_input/${SAMPLE}_hla_alleles.txt)
-
-pvacseq run \
-  results/snv/per_sample/${SAMPLE}.filtered.maf \
-  ${SAMPLE} \
-  "${HLA}" \
-  NetMHCpan \
-  results/pvacseq/${SAMPLE} \
-  --binding-threshold 500 \
-  --minimum-fold-change 1.0 \
-  --expn-val 1.0 \
-  -e1 8,9,10,11
-```
-
-### Outputs
-
-| File | Description |
-|---|---|
-| `results/integrated/all_candidates.tsv` | Full merged, ranked candidate table |
-| `results/integrated/summary.tsv` | Per-sample counts and tier breakdown |
-| `results/integrated/per_sample/<sample>.tsv` | Per-sample tables (with `--per-sample`) |
-| `results/integrated/pvacseq_input/<sample>_hla_alleles.txt` | HLA allele lists for pVACseq |
-
----
-
-## Recommended run order
-
-```bash
-# 1. Cluster: HLA typing and novel transcript extraction (if not already done)
-bash submit_hla.sh
-bash submit_hla.sh --merge-only
-
-bash submit_extract_novel.sh
-bash submit_extract_novel.sh --merge-only
-
-# 2. Local: SNV filtering
-python workflow/snv/filter_snv_neoantigens.py --per-sample
-
-# 3. Local: CNV analysis
-python workflow/cnv/analyze_cnv.py
-
-# 4. Cluster/Local: Novel peptide tiling
-python workflow/novel/process_novel_neoantigens.py \
-  --novel-dir /cluster/.../neo/novel \
-  --annotation-dir /cluster/.../RNA/process
-
-# 5. Local: Integrate and generate MHC prediction inputs
-python workflow/integrate/unify_candidates.py \
-  --cnv-flags results/cnv/cnv_sample_flags.tsv \
-  --per-sample --pvacseq-input
-
-# 6. Cluster: MHC-I binding prediction
-#    pVACseq for SNV candidates (per sample, see above)
-#    MHCflurry for novel transcript peptides:
-mhcflurry-predict \
-  --peptides results/novel/mhcflurry_input.csv \
-  --out results/novel/mhcflurry_predictions.csv \
-  --no-throw
-
-# 7. Local: Final integration with MHC results
-python workflow/integrate/unify_candidates.py \
-  --post-mhc \
-  --pvacseq-results results/pvacseq/ \
-  --mhcflurry-results results/novel/mhcflurry_predictions.csv \
-  --per-sample
-```
-
----
-
-## Red flags to watch for in the output
-
-These patterns in the final candidate table indicate variants that warrant manual review
-before using in downstream applications:
-
-| Flag / Condition | Column | Interpretation |
-|---|---|---|
-| `gnomad_low_freq=True` | `gnomad_af` 0–0.001 | Possibly germline. Do not use in Tier 1. |
-| `germline_risk_gene=True` | `germline_risk_gene` | High background germline rate; lower somatic confidence floor. |
-| `rna_support=undetected` | `rna_support` | Gene expressed but mutation not seen in RNA — possible allele-specific silencing. |
-| `nmd_predicted=True` | `nmd_predicted` | Frameshift/nonsense may be degraded by NMD; peptide may not be produced. Confirm with RNA expression. |
-| `cnv_vaf_discordant=True` | `cnv_vaf_discordant` | Observed VAF inconsistent with clonal heterozygous expectation given CNV — possibly subclonal or LOH. |
-| `weak_indel=True` | `weak_indel` | In-frame indel with < 8 alt reads; higher risk of being a sequencing artifact. |
-| `hla_loh_risk=True` | `hla_loh_risk` | One HLA allele may be lost; predictions against that allele may not be presentable. |
-| `presentation_impaired_genes` non-empty | `presentation_impaired_genes` | APM is disrupted in this sample; `mhc_presentation` is penalized but not zeroed. |
+- **somatic_confidence**: how likely is this variant truly somatic?
+- **bio_opportunity**: how much mutant peptide substrate is available for MHC loading?
+- **mhc_presentation**: how well does the mutant peptide bind and distinguish from wildtype?
 
 ---
 
@@ -756,16 +325,14 @@ Sample type codes:
 | `.NPT` | Normal patient tissue |
 | `.NPO` | Normal patient organoid |
 
-All local scripts apply suffix normalization: `PPTO0002.TPO_pmlb` → `PPTO0002.TPO`
-(implemented via `normalize_sample_id()` in each script). When multiple suffixed versions
-of a sample appear in a data file, the exact-match (no suffix) is preferred over `_pmlb`,
-which is preferred over replicate suffixes. This ensures consistent cross-file joining.
+All scripts normalize batch suffixes: `PPTO0002.TPO_pmlb` → `PPTO0002.TPO` before
+cross-file joining.
 
 ---
 
 ## Sample manifest
 
-Both cluster steps derive the sample list dynamically from:
+Both cluster steps derive the sample list from:
 ```
 /cluster/projects/livingbank/workspace/vivian/neo/260313_manifest_final.tsv
 ```

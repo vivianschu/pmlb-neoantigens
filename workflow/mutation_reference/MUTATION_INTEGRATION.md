@@ -15,7 +15,7 @@ Python CLI). Everything described below happens inside Step 01.
 Mass-spectrometry immunopeptidomics identifies peptides eluted from MHC. To
 detect *neoantigens*, the database used by the search engine must contain the
 mutant peptide sequences a tumour can present. A standard reference proteome
-(e.g. UniProt) will not contain them — by definition, neoantigens differ from
+(e.g. UniProt) will not contain them. By definition, neoantigens differ from
 the germline.
 
 The pipeline therefore builds a **sample-specific, variant-centred mutant
@@ -32,7 +32,7 @@ again would only inflate the search space.
 | Input | Source | Role |
 |---|---|---|
 | Somatic MAF | `Org_exome.data_mutations_extended.gt4.202507.txt` | One row per somatic variant call, VEP-annotated, FILTER=PASS or common_variant |
-| cDNA ORF FASTA | Output of [00_fetch_cdna_orfs.sh](00_fetch_cdna_orfs.sh) — derived from GENCODE v47 `pc_transcripts` | Reference CDS in nucleotide space, headers `>GENE|TRANSCRIPT_ID|ORF` |
+| cDNA ORF FASTA | Output of [00_fetch_cdna_orfs.sh](00_fetch_cdna_orfs.sh) derived from GENCODE v47 `pc_transcripts` | Reference CDS in nucleotide space, headers `>GENE|TRANSCRIPT_ID|ORF` |
 | Sample manifest (optional) | `data/rna/260313_manifest_final.tsv` | Restricts processing to a subset of samples |
 | HLA table (optional) | `data/rna/hla_summary.csv` (arcasHLA output) | Drives peptide×HLA pairing in the ML training table |
 | TPM / RNA VAF tables (optional) | Bulk RNA-seq outputs | Filter or annotate variants by expression / RNA support |
@@ -40,7 +40,7 @@ again would only inflate the search space.
 **Why cDNA, not protein?** HGVSc coordinates (`c.743G>A`) are defined relative
 to the start of the CDS. Applying mutations at the cDNA level lets us handle
 SNVs, MNVs, in-frame indels, and frameshifts in one uniform framework and
-then translate the result — instead of trying to special-case each variant
+then translate the result instead of trying to special-case each variant
 type at the protein level.
 
 ---
@@ -48,8 +48,8 @@ type at the protein level.
 ## 3. Building the cDNA ORF reference (Step 00, run once)
 
 [00_fetch_cdna_orfs.sh](00_fetch_cdna_orfs.sh) takes the GENCODE v47
-protein-coding-transcript FASTA — which contains full mRNAs
-(5′ UTR + CDS + 3′ UTR) — and extracts just the CDS for each transcript:
+protein-coding-transcript FASTA (which contains full mRNAs
+(5′ UTR + CDS + 3′ UTR)) and extracts just the CDS for each transcript:
 
 1. Parse the `CDS:start-end` field in the GENCODE header (1-based inclusive).
 2. Slice the transcript sequence to those coordinates.
@@ -71,14 +71,14 @@ both transcript ID and gene symbol.
 
 [mutations.py](mutations.py) reads the MAF with `pandas`. For each row:
 
-- **Sample manifest gating** — if a manifest was passed, rows whose
+- **Sample manifest gating** - if a manifest was passed, rows whose
   `Tumor_Sample_Barcode` is not in it are dropped. Suffixes such as `_pmlb`
   or `_novo` are stripped before matching so RNA-seq sample IDs collapse
   onto MAF barcodes.
-- **Silent classifications dropped** — `Silent`, `Synonymous`,
+- **Silent classifications dropped** - `Silent`, `Synonymous`,
   `Synonymous_Mutation`, `RNA` are removed before any protein-level work
   begins. They cannot generate neoantigens.
-- **HGVSc required** — rows without a parsable HGVSc string are skipped
+- **HGVSc required** - rows without a parsable HGVSc string are skipped
   (the pipeline operates entirely in CDS coordinates).
 
 Each retained row becomes one `Mutation` dataclass instance carrying the
@@ -104,7 +104,7 @@ parser handling the variant grammars that appear in this MAF:
 **The `N` placeholder.** This MAF often writes `c.157delNNNNN` or
 `c.10138N>A` because the upstream caller did not record the explicit
 reference base. The parser detects an all-`N` ref and clears it. Later, the
-true reference is read from the ORF sequence at that position — so the call
+true reference is read from the ORF sequence at that position - so the call
 is still applied correctly, just without a redundant cross-check.
 
 UTR (`c.*`, `c.-`) and intronic positions are filtered here.
@@ -131,7 +131,7 @@ selects the ORF record to mutate:
 
 If TPM and/or RNA variant tables are loaded, each variant is checked against
 the user-supplied thresholds (`--min-tpm`, `--min-rna-vaf`, `--min-rna-depth`).
-By default, **missing** RNA data does not fail the variant — the variant
+By default, **missing** RNA data does not fail the variant - the variant
 passes through with blank RNA columns. Set `--require-rna-filters` to flip
 this and treat missing data as a filter failure.
 
@@ -158,7 +158,7 @@ Key mechanics:
 - **Reference-base sanity check.** When the MAF gives an explicit ref base,
   it must match the ORF base at that position; mismatches are reported with
   `status=skipped_ref_mismatch` (unless `--allow-ref-mismatch` is passed).
-  When the ref was an `N` placeholder, this check is skipped — the ORF base
+  When the ref was an `N` placeholder, this check is skipped - the ORF base
   is treated as the ground truth.
 - Each variant type has its own splice rule (replace, delete, insert, or
   delins); the bookkeeping is in [mutations.py](mutations.py#L308-L460).
@@ -180,21 +180,21 @@ translated once per `(sample, gene)` to provide a comparison protein.
 Comparing the mutant protein to the reference protein, the effect is
 classified in this priority order:
 
-1. **`start_loss`** — first codon is no longer `ATG`.
-2. **`frameshift`** — mutated ORF length differs from the reference by a
+1. **`start_loss`** - first codon is no longer `ATG`.
+2. **`frameshift`** - mutated ORF length differs from the reference by a
    non-multiple of 3.
-3. **`stop_loss`** — reference protein had a stop and mutant translation
+3. **`stop_loss`** - reference protein had a stop and mutant translation
    ran past it (requires the ref stop position as input to disambiguate
    from an in-frame insertion).
-4. **`nonsense`** — premature stop codon, mutant protein shorter than ref.
-5. **`synonymous`** — protein sequences identical. *These are dropped from
+4. **`nonsense`** - premature stop codon, mutant protein shorter than ref.
+5. **`synonymous`** - protein sequences identical. *These are dropped from
    the FASTA* (logged as `sequence_status=skipped_synonymous` in
    `translation_report.tsv`). The MAF-level silent filter catches most;
    this catches the residual cases where the MAF said missense but the
    substitution turned out synonymous at the protein level.
-6. **`in_frame_ins` / `in_frame_del`** — protein length changed by a
+6. **`in_frame_ins` / `in_frame_del`** - protein length changed by a
    multiple of 3 at the nucleotide level.
-7. **`missense`** — same length, ≥1 amino-acid difference.
+7. **`missense`** - same length, ≥1 amino-acid difference.
 
 ---
 
@@ -238,7 +238,7 @@ sidecar `variant_to_protein_metadata.tsv`.
 For each written context, [`_peptide_candidates`](build_mutated_protein_db.py)
 slides a window of every length in `[--peptide-min-length,
 --peptide-max-length]` (default 8–15) across the altered interval. Only
-windows whose span *includes the altered residue* are emitted — peptides
+windows whose span *includes the altered residue* are emitted - peptides
 from unchanged regions are not neoantigen-derived evidence and would just
 duplicate reference proteome content. Windows containing `*` (stop) or
 `X` (unknown) are dropped, and windows whose mutant sequence equals the
@@ -276,7 +276,7 @@ the final FragPipe input under `mutation_reference/final/`.
 ## 13. Common pitfalls and design notes
 
 - **Variant-centred ≠ full mutant protein.** Peptides from unchanged
-  regions of a mutated gene are *not* neoantigen evidence — they exist in
+  regions of a mutated gene are *not* neoantigen evidence - they exist in
   the reference proteome already. Writing only the altered region prevents
   the search from being misled by trivial hits.
 - **Independent variant application.** Compound effects of multiple

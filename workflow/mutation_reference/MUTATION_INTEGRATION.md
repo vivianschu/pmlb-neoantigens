@@ -2,8 +2,6 @@
 
 This document walks through, step by step, how a somatic variant call (one row
 in a MAF file) becomes a mutant protein context in the FragPipe search database.
-It is written for a reader who is comfortable with molecular biology and
-sequence analysis but is new to this codebase.
 
 The relevant code lives in [workflow/mutation_reference/](.). The user-facing
 entry points are [01_build_mutated_db.sh](01_build_mutated_db.sh) (SLURM

@@ -4,7 +4,7 @@ Multi-cancer organoid neoantigen discovery pipeline. Processes HLA typing, novel
 extraction, somatic mutation application, and SNV/indel filtering into a unified, ranked
 neoantigen candidate list per sample.
 
-This pipeline is designed for **tumor-only** samples — no matched normal tissue is available.
+This pipeline is designed for **tumor-only** samples. No matched normal tissue is available.
 
 ---
 
@@ -26,9 +26,6 @@ MAF + CNV + TPM + HLA
           ──► novel/ Novel peptide tiling          ──► results/novel/    [planned]
           ──► integrate/ Unified integration       ──► results/integrated/ [planned]
 ```
-
-Steps 01–03 (RNA) and the mutation_reference pipeline run on the **cluster** via SLURM.
-SNV/CNV/novel/integration steps run **locally**.
 
 ---
 
@@ -117,7 +114,7 @@ Input BAMs (STAR-aligned) and StringTie GTFs:
 
 ---
 
-## Step 01 — HLA Typing (cluster) · `rna/01_hla_typing/`
+## Step 01 - HLA Typing (cluster) · `rna/01_hla_typing/`
 
 Runs [arcasHLA](https://github.com/RabadanLab/arcasHLA) on each sample's STAR-aligned BAM
 to type HLA-A, -B, -C alleles at two-field resolution.
@@ -130,7 +127,7 @@ Imputed samples are flagged with `hla_imputed=True`.
 
 | Script | Purpose |
 |---|---|
-| `hla_typing_array.sh` | SLURM array — one task per sample |
+| `hla_typing_array.sh` | SLURM array - one task per sample |
 | `submit_hla.sh` | Submission wrapper: validates inputs, submits array, merges results |
 
 ### Run
@@ -160,16 +157,16 @@ tail -f /cluster/projects/livingbank/workspace/vivian/neo/hla/logs/hla_<JOBID>_<
 
 ---
 
-## Step 02 — Novel Transcript Extraction (cluster) · `rna/02_extract_novel/`
+## Step 02 - Novel Transcript Extraction (cluster) · `rna/02_extract_novel/`
 
 Annotates per-sample StringTie assemblies against GENCODE v25 with gffcompare, extracts
 novel transcripts (class codes `u`, `n`, `j`), and exports sequences with gffread.
 
 | Class code | Description |
 |---|---|
-| `u` | Intergenic — novel locus, no overlap with any reference gene |
-| `n` | Intronic — transcript fully within a known gene intron |
-| `j` | Novel junction — known gene with at least one novel splice site |
+| `u` | Intergenic - novel locus, no overlap with any reference gene |
+| `n` | Intronic - transcript fully within a known gene intron |
+| `j` | Novel junction - known gene with at least one novel splice site |
 
 ### Scripts
 
@@ -195,7 +192,7 @@ Collected (`novel/`): `all_novel_sequences.fasta`, `all_novel_transcripts.gtf`,
 
 ---
 
-## Step 03 — TransDecoder ORF Prediction (cluster) · `rna/03_translate/`
+## Step 03 - TransDecoder ORF Prediction (cluster) · `rna/03_translate/`
 
 Runs [TransDecoder](https://github.com/TransDecoder/TransDecoder) on the per-sample novel
 FASTAs to produce `.transdecoder.pep` files. Minimum ORF length is 25 aa (TransDecoder
@@ -337,4 +334,3 @@ Both cluster steps derive the sample list from:
 /cluster/projects/livingbank/workspace/vivian/neo/260313_manifest_final.tsv
 ```
 Columns: `sample`, `read1`, `read2`, `source_sample_names`.
-To add or remove samples, edit the manifest — no script changes needed.
